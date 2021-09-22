@@ -291,9 +291,10 @@ blosc2_schunk* blosc2_schunk_copy(blosc2_schunk *schunk, blosc2_storage *storage
     if (blosc2_vlmeta_get(schunk, name, &content, &content_len) < 0) {
       BLOSC_TRACE_ERROR("Can not get %s `vlmetalayer`.", name);
     }
+    /*
     blosc2_cparams cparams2 = BLOSC2_CPARAMS_DEFAULTS;
-    cparams2.typesize = sizeof(uint8_t);
-    if (blosc2_vlmeta_add(new_schunk, name, content, content_len, &cparams2) < 0) {
+    cparams2.typesize = sizeof(uint8_t);*/
+    if (blosc2_vlmeta_add(new_schunk, name, content, content_len, NULL) < 0) {
       BLOSC_TRACE_ERROR("Can not add %s `vlmetalayer`.", name);
       return NULL;
     }
@@ -990,7 +991,9 @@ int blosc2_schunk_decompress_chunk(blosc2_schunk *schunk, int nchunk,
       return BLOSC2_ERROR_FAILURE;
     }
   } else {
+    printf("chunksize -32 %d\n", (schunk->chunksize-32));
     chunksize = frame_decompress_chunk(schunk->dctx, frame, nchunk, dest, nbytes);
+    printf("després frame decomp chunk\n");
     if (chunksize < 0) {
       return chunksize;
     }

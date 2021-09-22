@@ -1395,6 +1395,8 @@ static int blosc_d(
   bool is_lazy = ((context->header_overhead == BLOSC_EXTENDED_HEADER_LENGTH) &&
           (context->blosc2_flags & 0x08u) && !context->special_type);
   if (is_lazy) {
+      //int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
+    //int bsize_;
     // The chunk is on disk, so just lazily load the block
     if (context->schunk == NULL) {
       BLOSC_TRACE_ERROR("Lazy chunk needs an associated super-chunk.");
@@ -1416,6 +1418,13 @@ static int blosc_d(
     // Get the csize of the nblock
     int32_t *block_csizes = (int32_t *)(src + trailer_offset + sizeof(int32_t) + sizeof(int64_t));
     int32_t block_csize = block_csizes[nblock];
+    printf("block_csize %d\n", block_csize);
+    /*
+    int chunk_data = cbytes-BLOSC_EXTENDED_HEADER_LENGTH;
+    if (!(chunk_data % block_csize) ) {
+      block_csize =
+    }
+*/
     // Read the lazy block on disk
     void* fp = NULL;
     blosc2_io_cb *io_cb = blosc2_get_io_cb(context->schunk->storage->io->id);
@@ -1442,17 +1451,19 @@ static int blosc_d(
     // We can make use of tmp3 because it will be used after src is not needed anymore
     int64_t rbytes = io_cb->read(tmp3, 1, block_csize, fp);
     io_cb->close(fp);
+    printf("rbytes %d\n", rbytes);
     if ((int32_t)rbytes != block_csize) {
-      BLOSC_TRACE_ERROR("Cannot read the (lazy) block out of the fileframe.");
+      printf("Cannot read the (lazy) block out of the fileframe.");
       return BLOSC2_ERROR_READ_BUFFER;
     }
     src = tmp3;
     src_offset = 0;
-    srcsize = block_csize;
+    srcsize = bsize;
   }
 
   // If the chunk is memcpyed, we just have to copy the block to dest and return
   if (memcpyed) {
+  printf("és memcpied\n");
     int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
     if (!context->special_type) {
       if (chunk_nbytes + context->header_overhead != chunk_cbytes) {
@@ -1543,9 +1554,12 @@ static int blosc_d(
   /* The number of compressed data streams for this block */
   if (!dont_split && !leftoverblock && !context->use_dict) {
     // We don't want to split when in a training dict state
+    printf("We don't want to split when in a training dict state");
     nstreams = (int32_t)typesize;
   }
   else {
+      printf("nstreams=1");
+
     nstreams = 1;
   }
 
@@ -1557,6 +1571,7 @@ static int blosc_d(
   for (int j = 0; j < nstreams; j++) {
     if (srcsize < (signed)sizeof(int32_t)) {
       /* Not enough input to read compressed size */
+      printf("Not enough input to read compressed size1\n");
       return BLOSC2_ERROR_READ_BUFFER;
     }
     srcsize -= sizeof(int32_t);
@@ -1564,6 +1579,7 @@ static int blosc_d(
     if (cbytes > 0) {
       if (srcsize < cbytes) {
         /* Not enough input to read compressed bytes */
+        printf("Not enough input to read compressed size2\n");
         return BLOSC2_ERROR_READ_BUFFER;
       }
       srcsize -= cbytes;
@@ -1583,6 +1599,7 @@ static int blosc_d(
 
       if (srcsize < (signed)sizeof(uint8_t)) {
         // Not enough input to read token */
+        printf("Not enough input to read token \n");
         return BLOSC2_ERROR_READ_BUFFER;
       }
       srcsize -= sizeof(uint8_t);
@@ -1680,6 +1697,7 @@ static int blosc_d(
   }
 
   /* Return the number of uncompressed bytes */
+  printf("ntbytes %d\n", ntbytes);
   return (int)ntbytes;
 }
 
@@ -1733,6 +1751,10 @@ static int serial_blosc(struct thread_context* thread_context) {
       // If memcpyed we don't have a bstarts section (because it is not needed)
       int32_t src_offset = memcpyed ?
           context->header_overhead + j * context->blocksize : sw32_(bstarts + j);
+          printf("blocksize %d\n", context->blocksize);
+          printf("bsize %d\n", bsize);
+          printf("leftover %d\n", leftoverblock);
+
       cbytes = blosc_d(thread_context, bsize, leftoverblock, memcpyed,
                        context->src, context->srcsize, src_offset, j,
                        context->dest, j * context->blocksize, tmp, tmp2);
@@ -1915,10 +1937,11 @@ static int initialize_context_compression(
   int32_t blocksize, int16_t new_nthreads, int16_t nthreads,
   blosc2_btune *udbtune, void *btune_config,
   blosc2_schunk* schunk) {
+  /*
   if (srcsize % typesize != 0) {
     BLOSC_TRACE_ERROR("srcsize must be a multiple of typesize.");
     return BLOSC2_ERROR_INVALID_PARAM;
-  }
+  }*/
   /* Set parameters */
   context->do_compress = 1;
   context->src = (const uint8_t*)src;
