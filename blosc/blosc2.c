@@ -1394,6 +1394,78 @@ static int blosc_d(
   // Chunks with special values cannot be lazy
   bool is_lazy = ((context->header_overhead == BLOSC_EXTENDED_HEADER_LENGTH) &&
           (context->blosc2_flags & 0x08u) && !context->special_type);
+
+  // If the chunk is memcpyed, we just have to copy the block to dest and return
+  if (memcpyed) {
+    printf("és memcpied\n");
+    int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
+    if (!context->special_type) {
+      if (chunk_nbytes + context->header_overhead != chunk_cbytes) {
+        return BLOSC2_ERROR_WRITE_BUFFER;
+      }
+      if (chunk_cbytes < context->header_overhead + (nblock * context->blocksize) + bsize_) {
+        /* Not enough input to copy block */
+        return BLOSC2_ERROR_READ_BUFFER;
+      }
+    }
+    if (!is_lazy) {
+      src += context->header_overhead + nblock * context->blocksize;
+    }
+    _dest = dest + dest_offset;
+    if (context->postfilter != NULL) {
+      // We are making use of a postfilter, so use a temp for destination
+      _dest = tmp;
+    }
+    rc = 0;
+    switch (context->special_type) {
+      case BLOSC2_SPECIAL_VALUE:
+        // All repeated values
+        rc = set_values(context->typesize, context->src, _dest, bsize_);
+        if (rc < 0) {
+          BLOSC_TRACE_ERROR("set_values failed");
+          return BLOSC2_ERROR_DATA;
+        }
+        break;
+      case BLOSC2_SPECIAL_NAN:
+        rc = set_nans(context->typesize, _dest, bsize_);
+        if (rc < 0) {
+          BLOSC_TRACE_ERROR("set_nans failed");
+          return BLOSC2_ERROR_DATA;
+        }
+        break;
+      case BLOSC2_SPECIAL_ZERO:
+        memset(_dest, 0, bsize_);
+        break;
+      case BLOSC2_SPECIAL_UNINIT:
+        // We do nothing here
+        break;
+      default:
+        memcpy(_dest, src, bsize_);
+    }
+    if (context->postfilter != NULL) {
+      // Create new postfilter parameters for this block (must be private for each thread)
+      blosc2_postfilter_params postparams;
+      memcpy(&postparams, context->postparams, sizeof(postparams));
+      postparams.in = tmp;
+      postparams.out = dest + dest_offset;
+      postparams.size = bsize;
+      postparams.typesize = typesize;
+      postparams.offset = nblock * context->blocksize;
+      postparams.tid = thread_context->tid;
+      postparams.ttmp = thread_context->tmp;
+      postparams.ttmp_nbytes = thread_context->tmp_nbytes;
+      postparams.ctx = context;
+
+      // Execute the postfilter (the processed block will be copied to dest)
+      if (context->postfilter(&postparams) != 0) {
+        BLOSC_TRACE_ERROR("Execution of postfilter function failed");
+        return BLOSC2_ERROR_POSTFILTER;
+      }
+    }
+    return bsize_;
+  }
+
+
   if (is_lazy) {
       //int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
     //int bsize_;
@@ -1461,75 +1533,6 @@ static int blosc_d(
     srcsize = bsize;
   }
 
-  // If the chunk is memcpyed, we just have to copy the block to dest and return
-  if (memcpyed) {
-  printf("és memcpied\n");
-    int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
-    if (!context->special_type) {
-      if (chunk_nbytes + context->header_overhead != chunk_cbytes) {
-        return BLOSC2_ERROR_WRITE_BUFFER;
-      }
-      if (chunk_cbytes < context->header_overhead + (nblock * context->blocksize) + bsize_) {
-        /* Not enough input to copy block */
-        return BLOSC2_ERROR_READ_BUFFER;
-      }
-    }
-    if (!is_lazy) {
-      src += context->header_overhead + nblock * context->blocksize;
-    }
-    _dest = dest + dest_offset;
-    if (context->postfilter != NULL) {
-      // We are making use of a postfilter, so use a temp for destination
-      _dest = tmp;
-    }
-    rc = 0;
-    switch (context->special_type) {
-      case BLOSC2_SPECIAL_VALUE:
-        // All repeated values
-        rc = set_values(context->typesize, context->src, _dest, bsize_);
-        if (rc < 0) {
-          BLOSC_TRACE_ERROR("set_values failed");
-          return BLOSC2_ERROR_DATA;
-        }
-        break;
-      case BLOSC2_SPECIAL_NAN:
-        rc = set_nans(context->typesize, _dest, bsize_);
-        if (rc < 0) {
-          BLOSC_TRACE_ERROR("set_nans failed");
-          return BLOSC2_ERROR_DATA;
-        }
-        break;
-      case BLOSC2_SPECIAL_ZERO:
-        memset(_dest, 0, bsize_);
-        break;
-      case BLOSC2_SPECIAL_UNINIT:
-        // We do nothing here
-        break;
-      default:
-        memcpy(_dest, src, bsize_);
-    }
-    if (context->postfilter != NULL) {
-      // Create new postfilter parameters for this block (must be private for each thread)
-      blosc2_postfilter_params postparams;
-      memcpy(&postparams, context->postparams, sizeof(postparams));
-      postparams.in = tmp;
-      postparams.out = dest + dest_offset;
-      postparams.size = bsize;
-      postparams.typesize = typesize;
-      postparams.offset = nblock * context->blocksize;
-      postparams.tid = thread_context->tid;
-      postparams.ttmp = thread_context->tmp;
-      postparams.ttmp_nbytes = thread_context->tmp_nbytes;
-      postparams.ctx = context;
-
-      // Execute the postfilter (the processed block will be copied to dest)
-      if (context->postfilter(&postparams) != 0) {
-        BLOSC_TRACE_ERROR("Execution of postfilter function failed");
-        return BLOSC2_ERROR_POSTFILTER;
-      }
-    }
-    return bsize_;
-  }
 
   if (!is_lazy && (src_offset <= 0 || src_offset >= srcsize)) {
     /* Invalid block src offset encountered */
@@ -1937,6 +1940,7 @@ static int initialize_context_compression(
   int32_t blocksize, int16_t new_nthreads, int16_t nthreads,
   blosc2_btune *udbtune, void *btune_config,
   blosc2_schunk* schunk) {
+  printf("initialize context compression\n");
   /*
   if (srcsize % typesize != 0) {
     BLOSC_TRACE_ERROR("srcsize must be a multiple of typesize.");
@@ -2266,7 +2270,7 @@ int blosc_compress_context(blosc2_context* context) {
 int blosc2_compress_ctx(blosc2_context* context, const void* src, int32_t srcsize,
                         void* dest, int32_t destsize) {
   int error, cbytes;
-
+printf("principi compress ctx srcsize %d\n", srcsize);
   if (context->do_compress != 1) {
     BLOSC_TRACE_ERROR("Context is not meant for compression.  Giving up.");
     return BLOSC2_ERROR_INVALID_PARAM;
@@ -2289,11 +2293,13 @@ int blosc2_compress_ctx(blosc2_context* context, const void* src, int32_t srcsiz
   }
 
   cbytes = blosc_compress_context(context);
+  printf("cbytes %d\n", cbytes);
   if (cbytes < 0) {
     return cbytes;
   }
 
   if (context->use_dict && context->dict_cdict == NULL) {
+    printf("dins de la llonganisa\n");
 
     if (context->compcode != BLOSC_ZSTD) {
       const char* compname;
