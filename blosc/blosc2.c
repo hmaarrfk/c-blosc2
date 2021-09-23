@@ -1394,10 +1394,79 @@ static int blosc_d(
   // Chunks with special values cannot be lazy
   bool is_lazy = ((context->header_overhead == BLOSC_EXTENDED_HEADER_LENGTH) &&
           (context->blosc2_flags & 0x08u) && !context->special_type);
+  if (is_lazy) {
+      //int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
+    //int bsize_;
+    // The chunk is on disk, so just lazily load the block
+    if (context->schunk == NULL) {
+      BLOSC_TRACE_ERROR("Lazy chunk needs an associated super-chunk.");
+      return BLOSC2_ERROR_INVALID_PARAM;
+    }
+    if (context->schunk->frame == NULL) {
+      BLOSC_TRACE_ERROR("Lazy chunk needs an associated frame.");
+      return BLOSC2_ERROR_INVALID_PARAM;
+    }
+    blosc2_frame_s* frame = (blosc2_frame_s*)context->schunk->frame;
+    char* urlpath = frame->urlpath;
+    int32_t trailer_len = sizeof(int32_t) + sizeof(int64_t) + context->nblocks * sizeof(int32_t);
+    size_t trailer_offset = BLOSC_EXTENDED_HEADER_LENGTH + context->nblocks * sizeof(int32_t);
+    int32_t nchunk;
+    int64_t chunk_offset;
+    // The nchunk and the offset of the current chunk are in the trailer
+    nchunk = *(int32_t*)(src + trailer_offset);
+    chunk_offset = *(int64_t*)(src + trailer_offset + sizeof(int32_t));
+    // Get the csize of the nblock
+    int32_t *block_csizes = (int32_t *)(src + trailer_offset + sizeof(int32_t) + sizeof(int64_t));
+    int32_t block_csize = block_csizes[nblock];
+    if (memcpyed) {
+      block_csize = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
+    }
+    printf("block_csize %d\n", block_csize);
+    /*
+    int chunk_data = cbytes-BLOSC_EXTENDED_HEADER_LENGTH;
+    if (!(chunk_data % block_csize) ) {
+      block_csize =
+    }
+*/
+    // Read the lazy block on disk
+    void* fp = NULL;
+    blosc2_io_cb *io_cb = blosc2_get_io_cb(context->schunk->storage->io->id);
+    if (io_cb == NULL) {
+      BLOSC_TRACE_ERROR("Error getting the input/output API");
+      return BLOSC2_ERROR_PLUGIN_IO;
+    }
+
+    if (frame->sframe) {
+      // The chunk is not in the frame
+      char* chunkpath = malloc(strlen(frame->urlpath) + 1 + 8 + strlen(".chunk") + 1);
+      BLOSC_ERROR_NULL(chunkpath, BLOSC2_ERROR_MEMORY_ALLOC);
+      sprintf(chunkpath, "%s/%08X.chunk", frame->urlpath, nchunk);
+      fp = io_cb->open(chunkpath, "rb", context->schunk->storage->io->params);
+      free(chunkpath);
+      // The offset of the block is src_offset
+      io_cb->seek(fp, src_offset, SEEK_SET);
+    }
+    else {
+      fp = io_cb->open(urlpath, "rb", context->schunk->storage->io->params);
+      // The offset of the block is src_offset
+      io_cb->seek(fp, chunk_offset + src_offset, SEEK_SET);
+    }
+    // We can make use of tmp3 because it will be used after src is not needed anymore
+    int64_t rbytes = io_cb->read(tmp3, 1, block_csize, fp);
+    io_cb->close(fp);
+    printf("rbytes %d\n", rbytes);
+    if ((int32_t)rbytes != block_csize) {
+      printf("Cannot read the (lazy) block out of the fileframe.");
+      return BLOSC2_ERROR_READ_BUFFER;
+    }
+    src = tmp3;
+    src_offset = 0;
+    srcsize = bsize;
+  }
 
   // If the chunk is memcpyed, we just have to copy the block to dest and return
   if (memcpyed) {
-    printf("és memcpied\n");
+  printf("és memcpied\n");
     int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
     if (!context->special_type) {
       if (chunk_nbytes + context->header_overhead != chunk_cbytes) {
@@ -1464,75 +1533,6 @@ static int blosc_d(
     }
     return bsize_;
   }
-
-
-  if (is_lazy) {
-      //int bsize_ = leftoverblock ? chunk_nbytes % context->blocksize : bsize;
-    //int bsize_;
-    // The chunk is on disk, so just lazily load the block
-    if (context->schunk == NULL) {
-      BLOSC_TRACE_ERROR("Lazy chunk needs an associated super-chunk.");
-      return BLOSC2_ERROR_INVALID_PARAM;
-    }
-    if (context->schunk->frame == NULL) {
-      BLOSC_TRACE_ERROR("Lazy chunk needs an associated frame.");
-      return BLOSC2_ERROR_INVALID_PARAM;
-    }
-    blosc2_frame_s* frame = (blosc2_frame_s*)context->schunk->frame;
-    char* urlpath = frame->urlpath;
-    int32_t trailer_len = sizeof(int32_t) + sizeof(int64_t) + context->nblocks * sizeof(int32_t);
-    size_t trailer_offset = BLOSC_EXTENDED_HEADER_LENGTH + context->nblocks * sizeof(int32_t);
-    int32_t nchunk;
-    int64_t chunk_offset;
-    // The nchunk and the offset of the current chunk are in the trailer
-    nchunk = *(int32_t*)(src + trailer_offset);
-    chunk_offset = *(int64_t*)(src + trailer_offset + sizeof(int32_t));
-    // Get the csize of the nblock
-    int32_t *block_csizes = (int32_t *)(src + trailer_offset + sizeof(int32_t) + sizeof(int64_t));
-    int32_t block_csize = block_csizes[nblock];
-    printf("block_csize %d\n", block_csize);
-    /*
-    int chunk_data = cbytes-BLOSC_EXTENDED_HEADER_LENGTH;
-    if (!(chunk_data % block_csize) ) {
-      block_csize =
-    }
-*/
-    // Read the lazy block on disk
-    void* fp = NULL;
-    blosc2_io_cb *io_cb = blosc2_get_io_cb(context->schunk->storage->io->id);
-    if (io_cb == NULL) {
-      BLOSC_TRACE_ERROR("Error getting the input/output API");
-      return BLOSC2_ERROR_PLUGIN_IO;
-    }
-
-    if (frame->sframe) {
-      // The chunk is not in the frame
-      char* chunkpath = malloc(strlen(frame->urlpath) + 1 + 8 + strlen(".chunk") + 1);
-      BLOSC_ERROR_NULL(chunkpath, BLOSC2_ERROR_MEMORY_ALLOC);
-      sprintf(chunkpath, "%s/%08X.chunk", frame->urlpath, nchunk);
-      fp = io_cb->open(chunkpath, "rb", context->schunk->storage->io->params);
-      free(chunkpath);
-      // The offset of the block is src_offset
-      io_cb->seek(fp, src_offset, SEEK_SET);
-    }
-    else {
-      fp = io_cb->open(urlpath, "rb", context->schunk->storage->io->params);
-      // The offset of the block is src_offset
-      io_cb->seek(fp, chunk_offset + src_offset, SEEK_SET);
-    }
-    // We can make use of tmp3 because it will be used after src is not needed anymore
-    int64_t rbytes = io_cb->read(tmp3, 1, block_csize, fp);
-    io_cb->close(fp);
-    printf("rbytes %d\n", rbytes);
-    if ((int32_t)rbytes != block_csize) {
-      printf("Cannot read the (lazy) block out of the fileframe.");
-      return BLOSC2_ERROR_READ_BUFFER;
-    }
-    src = tmp3;
-    src_offset = 0;
-    srcsize = bsize;
-  }
-
 
   if (!is_lazy && (src_offset <= 0 || src_offset >= srcsize)) {
     /* Invalid block src offset encountered */
